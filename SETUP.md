@@ -36,7 +36,7 @@ sudo apt-get install -y libgl1-mesa-glx libglib2.0-0
 
 1. Клонирование репозитория:
 ```bash
-git clone <your-repository-url>
+gh repo clone haxoreds/video
 cd video-scene-bot
 ```
 
