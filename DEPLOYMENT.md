@@ -80,8 +80,8 @@ WantedBy=multi-user.target
 
 1. Клонируйте репозиторий:
 ```bash
-git clone https://github.com/your-repo/video-scene-bot.git
-cd video-scene-bot
+gh repo clone haxoreds/video
+cd video
 ```
 
 2. Создайте виртуальное окружение:
