@@ -37,8 +37,8 @@ sudo apt-get install -y libgl1-mesa-glx libglib2.0-0
 
 2. Клонируйте репозиторий:
 ```bash
-git clone https://github.com/ваш-репозиторий/video-scene-bot
-cd video-scene-bot
+gh repo clone haxoreds/video
+cd video
 ```
 
 3. Создайте виртуальное окружение и активируйте его:
