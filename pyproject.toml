@@ -5,9 +5,14 @@ description = "Telegram bot for video scene detection"
 requires-python = ">=3.11"
 dependencies = [
     "ffmpeg-python==0.2.0",
+    "httpx>=0.25.2",
+    "opencv-python>=4.11.0.86",
     "opencv-python-headless==4.11.0.86",
-    "python-telegram-bot==21.10",
+    "psutil>=7.0.0",
+    "python-telegram-bot==20.7",
     "pytube==15.0.0",
+    "requests>=2.32.3",
     "scenedetect==0.6.5.2",
-    "yt-dlp==2025.2.19"
+    "telegram>=0.0.1",
+    "yt-dlp==2025.2.19",
 ]

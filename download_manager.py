@@ -1,10 +1,8 @@
 import os
 import logging
 import asyncio
-from typing import List, Tuple, Callable, Optional
-import time
-import requests
-import shutil
+from typing import Tuple, Optional, Callable
+import httpx
 from urllib.parse import urlparse
 import yt_dlp
 
@@ -38,8 +36,11 @@ class DownloadManager:
 
             def download_video():
                 ydl_opts = {
-                    'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+                    'format': 'bestvideo*+bestaudio/best',  # Get best quality available
+                    'format_sort': ['res:2160', 'res:1440', 'res:1080', 'res:720'],  # Prioritize higher resolutions
                     'outtmpl': os.path.join(output_path, '%(title)s.%(ext)s'),
+                    'merge_output_format': 'mp4',  # Ensure final format is mp4
+                    'postprocessor_args': ['-c:v', 'copy', '-c:a', 'copy'],  # Copy streams without re-encoding
                     'quiet': True,
                     'no_warnings': True,
                     'noplaylist': True,
@@ -54,7 +55,7 @@ class DownloadManager:
                         if info.get('duration', 0) > 3600:
                             raise Exception("Видео слишком длинное (более 1 часа). Пожалуйста, выберите видео меньшей длительности.")
 
-                        logger.info("Начинаем загрузку видео...")
+                        logger.info("Начинаем загрузку видео в максимальном качестве...")
                         info = ydl.extract_info(url, download=True)
                         video_path = ydl.prepare_filename(info)
 
@@ -86,7 +87,6 @@ class DownloadManager:
             error_msg = str(e)
             logger.error(f"Ошибка загрузки видео: {error_msg}", exc_info=True)
 
-            # Clean up on error
             await DownloadManager.cleanup_temp_files(output_path)
 
             if "quota exceeded" in error_msg.lower():
@@ -101,28 +101,69 @@ class DownloadManager:
                 return False, f"Ошибка загрузки видео: {error_msg}"
 
     @staticmethod
-    async def save_telegram_video(file, output_path: str, progress_callback: Optional[Callable] = None) -> Tuple[bool, str]:
-        """Save video file received from Telegram."""
+    async def save_telegram_video(file_id: str, output_path: str, bot, progress_callback: Optional[Callable] = None) -> Tuple[bool, str]:
+        """Download video files from Telegram with progress tracking."""
         try:
-            logger.info("Начинаем сохранение видеофайла из Telegram")
+            logger.info(f"Starting download for file_id: {file_id}")
             file_path = os.path.join(output_path, "telegram_video.mp4")
 
-            # Download file using the correct method
-            if progress_callback:
-                logger.info("Загрузка файла с отслеживанием прогресса")
-                try:
-                    await file.download_to_drive(file_path)
-                except TypeError:
-                    # If download_to_drive doesn't accept progress callback
-                    await file.download_to_drive(file_path)
-            else:
-                logger.info("Загрузка файла без отслеживания прогресса")
-                await file.download_to_drive(file_path)
+            # Get file object directly from bot
+            try:
+                file = await bot.get_file(file_id)
+                logger.info("Successfully got file object")
 
-            file_size = os.path.getsize(file_path) / (1024 * 1024)
-            logger.info(f"Видеофайл успешно сохранен. Размер: {file_size:.1f}МБ")
+                # Download the file directly without getting URL
+                await file.download_to_drive(custom_path=file_path)
 
-            return True, file_path
+                if os.path.exists(file_path):
+                    file_size = os.path.getsize(file_path)
+                    logger.info(f"Download completed. File size: {file_size/(1024*1024):.1f}MB")
+                    return True, file_path
+                else:
+                    raise FileNotFoundError("Downloaded file not found")
+
+            except Exception as e:
+                error_msg = str(e)
+                logger.error(f"Download failed: {error_msg}", exc_info=True)
+                if "file is too big" in error_msg.lower():
+                    logger.info("File is too big for direct download, trying chunked download...")
+                    try:
+                        # Try alternative chunked download method
+                        chunks = []
+                        chunk_size = 64 * 1024  # 64KB chunks
+                        offset = 0
+
+                        with open(file_path, 'wb') as f:
+                            while True:
+                                chunk = await bot.download_file_by_id(
+                                    file_id,
+                                    offset=offset,
+                                    limit=chunk_size
+                                )
+                                if not chunk:
+                                    break
+
+                                f.write(chunk)
+                                offset += len(chunk)
+
+                                if progress_callback:
+                                    try:
+                                        await progress_callback(offset, file.file_size)
+                                    except Exception as e:
+                                        logger.error(f"Progress callback error: {e}")
+
+                        if os.path.exists(file_path):
+                            actual_size = os.path.getsize(file_path)
+                            logger.info(f"Chunked download completed. File size: {actual_size/(1024*1024):.1f}MB")
+                            return True, file_path
+
+                    except Exception as chunk_error:
+                        logger.error(f"Chunked download failed: {str(chunk_error)}", exc_info=True)
+                        raise
+                else:
+                    raise
+
         except Exception as e:
-            logger.error(f"Ошибка сохранения видео из Telegram: {str(e)}", exc_info=True)
-            return False, f"Ошибка сохранения видео: {str(e)}"
+            error_msg = str(e)
+            logger.error(f"Download failed: {error_msg}", exc_info=True)
+            return False, f"Ошибка загрузки видео: {error_msg}"
