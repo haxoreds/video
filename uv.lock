@@ -396,7 +396,7 @@ requires-dist = [
     { name = "opencv-python", specifier = ">=4.11.0.86" },
     { name = "opencv-python-headless", specifier = "==4.11.0.86" },
     { name = "psutil", specifier = ">=7.0.0" },
-    { name = "python-telegram-bot", specifier = "==20.7" },
+    { name = "python-telegram-bot", extras = ["httpx"], specifier = "==20.7" },
     { name = "pytube", specifier = "==15.0.0" },
     { name = "requests", specifier = ">=2.32.3" },
     { name = "scenedetect", specifier = "==0.6.5.2" },

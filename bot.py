@@ -128,7 +128,7 @@ class SceneDetectionBot:
             await message.reply_text("❌ Пожалуйста, отправьте корректную ссылку на YouTube видео.\nПример: https://youtube.com/watch?v=...")
             return
 
-        status_message = await message.reply_text("⏳ Загрузка видео с YouTube... 0%")
+        status_message = await message.reply_text("⏳ Загрузка видео с YouTube...")
 
         # Clean up temp directories before starting
         try:
@@ -143,7 +143,7 @@ class SceneDetectionBot:
         logger.info(f"Created temporary directory for YouTube download: {temp_dir}")
 
         try:
-            success, result = await DownloadManager.download_from_youtube(text, temp_dir)
+            success, result = await DownloadManager.download_from_youtube(text, temp_dir, context.bot)
 
             if not success:
                 error_msg = result
@@ -152,7 +152,7 @@ class SceneDetectionBot:
                 await status_message.edit_text(f"❌ {error_msg}")
                 return
 
-            logger.info(f"Successfully downloaded YouTube video to: {result}")
+            logger.info(f"Successfully processed YouTube video: {result}")
             await self.process_video_and_show_options(result, status_message, temp_dir)
 
         except Exception as e:
@@ -179,43 +179,47 @@ class SceneDetectionBot:
                 )
                 return
 
-        status_message = await message.reply_text("⏳ Начинаем загрузку видео...")
+        # Get file info and size
+        if message.video:
+            file_id = message.video.file_id
+            file_size = message.video.file_size
+            duration = message.video.duration if hasattr(message.video, 'duration') else None
+        else:
+            file_id = message.document.file_id
+            file_size = message.document.file_size
+            duration = None
+
+        logger.info(f"Processing video: size={file_size/(1024*1024):.1f}MB, duration={duration}s if duration else 'unknown'")
+
+        # Show initial message
+        status_message = await message.reply_text(
+            "⏳ Начинаем обработку видео...\n\n"
+            f"📊 Размер файла: {file_size/(1024*1024):.1f}MB\n"
+            "Пожалуйста, подождите..."
+        )
+
         temp_dir = create_temp_dir()
         logger.info(f"Created temporary directory for video: {temp_dir}")
 
         try:
-            async def progress_callback(current, total):
-                try:
-                    percent = int(current * 100 / total) if total > 0 else 0
-                    progress_text = f"⏳ Загрузка видео... {percent}%\n{format_progress_bar(percent)}"
-                    await status_message.edit_text(progress_text)
-                except Exception as e:
-                    logger.error(f"Error updating progress: {e}")
-
-            # Get file_id and size from either video or document
-            if message.video:
-                file_id = message.video.file_id
-                file_size = message.video.file_size
-                logger.info(f"Processing video: size={file_size/(1024*1024):.1f}MB")
-            else:
-                file_id = message.document.file_id
-                file_size = message.document.file_size
-                logger.info(f"Processing document: size={file_size/(1024*1024):.1f}MB")
-
-            success, result = await DownloadManager.save_telegram_video(file_id, temp_dir, context.bot, progress_callback)
-            if not success:
-                logger.error(f"Failed to save video: {result}")
-                await status_message.edit_text(f"❌ {result}")
-                cleanup_temp_files(temp_dir)
-                return
-
-            logger.info(f"Successfully saved video to: {result}")
-            await self.process_video_and_show_options(result, status_message, temp_dir)
+            await self.process_video_and_show_options(file_id, status_message, temp_dir)
 
         except Exception as e:
             logger.exception("Error processing video file")
             error_msg = str(e)
-            await status_message.edit_text(f"❌ Произошла ошибка: {error_msg}")
+            if "too big" in error_msg.lower():
+                await status_message.edit_text(
+                    "❌ Видео слишком большое для обработки.\n"
+                    "Попробуйте видео меньшего размера или длительности."
+                )
+            else:
+                await status_message.edit_text(
+                    "❌ Произошла ошибка при обработке видео.\n"
+                    "Пожалуйста, убедитесь что:\n"
+                    "1. Видео не повреждено\n"
+                    "2. Формат видео поддерживается\n"
+                    f"\nДетали ошибки: {error_msg}"
+                )
             cleanup_temp_files(temp_dir)
 
     async def process_video_and_show_options(self, video_path: str, status_message, temp_dir: str):
@@ -223,38 +227,41 @@ class SceneDetectionBot:
         try:
             logger.info(f"Starting video processing for: {video_path}")
 
-            is_valid, error = VideoProcessor.validate_video(video_path)
-            if not is_valid:
-                logger.error(f"Video validation failed: {error}")
-                await status_message.edit_text(f"❌ {error}")
-                cleanup_temp_files(temp_dir)  # Clean up on validation error
-                return
-
-            await status_message.edit_text("🎬 Определение и разделение сцен...\n" + format_progress_bar(0))
+            await status_message.edit_text("🎬 Загрузка и обработка видео...\n" + format_progress_bar(0))
 
             try:
                 async def progress_callback(progress: int, stage: str = ""):
-                    logger.info(f"Processing progress: {progress}% - {stage}")
-                    progress_text = f"🎬 {stage}\n{format_progress_bar(progress)}"
+                    progress_text = (
+                        f"🎬 {stage}\n"
+                        f"{format_progress_bar(progress)}\n\n"
+                        "⏳ Пожалуйста, подождите, процесс может занять несколько минут..."
+                    )
                     return await status_message.edit_text(progress_text)
 
-                # Добавляем таймаут в 10 минут для процесса обработки видео
-                async with asyncio.timeout(600):  # 10 минут
-                    success, scenes = await VideoProcessor.detect_and_split_scenes(
-                        video_path,
+                # Add timeout for video processing
+                async with asyncio.timeout(600):  # 10 minutes
+                    success, scenes = await VideoProcessor.process_telegram_stream(
+                        video_path,  # This is actually file_id
                         temp_dir,
+                        self.application.bot,
                         progress_callback
                     )
 
                     if not success:
-                        logger.error(f"Scene detection failed: {scenes[0]}")
-                        await status_message.edit_text(f"❌ {scenes[0]}")
-                        cleanup_temp_files(temp_dir)  # Clean up on detection failure
+                        logger.error(f"Video processing failed: {scenes[0]}")
+                        await status_message.edit_text(
+                            f"❌ {scenes[0]}\n\n"
+                            "📝 Рекомендации:\n"
+                            "1. Убедитесь, что видео не повреждено\n"
+                            "2. Попробуйте загрузить видео заново\n"
+                            "3. Проверьте формат видео (поддерживаются MP4, AVI, MKV, MOV)"
+                        )
+                        cleanup_temp_files(temp_dir)
                         return
 
-                    logger.info(f"Successfully split video into {len(scenes)} scenes")
+                    logger.info(f"Successfully processed video: {scenes[0]}")
 
-                    # Create inline keyboard with two buttons
+                    # Create inline keyboard with options
                     keyboard = [
                         [
                             InlineKeyboardButton("📤 Получить в Telegram", callback_data=f"telegram|{temp_dir}"),
@@ -264,7 +271,7 @@ class SceneDetectionBot:
                     reply_markup = InlineKeyboardMarkup(keyboard)
 
                     await status_message.edit_text(
-                        f"✅ Видео успешно разделено на {len(scenes)} сцен!\n"
+                        "✅ Видео успешно загружено!\n"
                         "Выберите способ получения:",
                         reply_markup=reply_markup
                     )
@@ -272,16 +279,15 @@ class SceneDetectionBot:
             except asyncio.TimeoutError:
                 logger.error("Video processing timed out")
                 await status_message.edit_text(
-                    "❌ Превышено время обработки видео. Пожалуйста, попробуйте видео меньшей длительности "
-                    "или свяжитесь с администратором."
+                    "❌ Превышено время обработки видео. Пожалуйста, попробуйте видео меньшей длительности."
                 )
-                cleanup_temp_files(temp_dir)  # Clean up on timeout
+                cleanup_temp_files(temp_dir)
                 return
 
         except Exception as e:
             logger.exception("Error in video processing")
             await status_message.edit_text(f"❌ Произошла ошибка при обработке видео: {str(e)}")
-            cleanup_temp_files(temp_dir)  # Clean up on any other error
+            cleanup_temp_files(temp_dir)
 
     async def send_scenes_telegram(self, message, temp_dir: str):
         """Send scenes via Telegram."""
@@ -293,27 +299,53 @@ class SceneDetectionBot:
 
             logger.info(f"Отправка сцен в порядке: {', '.join(scenes)}")
 
+            if len(scenes) == 0:
+                logger.error("No scenes found for sending")
+                await message.edit_text("❌ Не удалось разделить видео на сцены. Попробуйте ещё раз.")
+                return
+
             await message.edit_text(f"📤 Отправка {len(scenes)} сцен... 0%")
 
             # Process scenes sequentially
             total_scenes = len(scenes)
             scenes_sent = 0
 
-            # Send scenes one by one to maintain order
+            # Send scenes one by one
             for scene_path in scene_paths:
                 try:
-                    with open(scene_path, 'rb') as video:
-                        scene_number = int(os.path.basename(scene_path).split('-')[1].split('.')[0])
-                        await self.application.bot.send_video(
-                            chat_id=message.chat_id,
-                            video=video,
-                            caption=f"Сцена {scene_number}",
-                            supports_streaming=True
-                        )
-                        scenes_sent += 1
-                        progress = int(scenes_sent * 100 / total_scenes)
-                        if progress % 10 == 0:  # Update progress every 10%
-                            await message.edit_text(f"📤 Отправка сцен... {progress}%")
+                    # For large scenes, check size first
+                    if os.path.exists(scene_path):
+                        scene_size = os.path.getsize(scene_path)
+                        if scene_size > 50 * 1024 * 1024:  # > 50MB
+                            logger.info(f"Large scene detected ({scene_size/(1024*1024):.1f}MB), uploading first")
+                            success, result = await DownloadManager.upload_to_telegram(scene_path, self.application.bot)
+                            if success:
+                                logger.info("Successfully uploaded large scene")
+                                await self.application.bot.send_video(
+                                    chat_id=message.chat_id,
+                                    video=result,
+                                    caption=f"Сцена {scenes_sent + 1}",
+                                    supports_streaming=True
+                                )
+                            else:
+                                raise Exception(f"Failed to upload scene: {result}")
+                        else:
+                            # For smaller scenes, send directly
+                            logger.info(f"Sending scene directly ({scene_size/(1024*1024):.1f}MB)")
+                            with open(scene_path, 'rb') as video:
+                                await self.application.bot.send_video(
+                                    chat_id=message.chat_id,
+                                    video=video,
+                                    caption=f"Сцена {scenes_sent + 1}",
+                                    supports_streaming=True
+                                )
+                                logger.info("Scene sent successfully")
+
+                    scenes_sent += 1
+                    progress = int(scenes_sent * 100 / total_scenes)
+                    if progress % 10 == 0:  # Update progress every 10%
+                        await message.edit_text(f"📤 Отправка сцен... {progress}%")
+
                 except Exception as e:
                     logger.error(f"Ошибка при отправке сцены {scene_path}: {str(e)}")
                     await message.reply_text(f"❌ Не удалось отправить сцену {os.path.basename(scene_path)}: {str(e)}")
@@ -323,10 +355,7 @@ class SceneDetectionBot:
             await message.edit_text(f"❌ Произошла ошибка при отправке сцен: {str(e)}")
         finally:
             # Cleanup all temporary files
-            try:
-                cleanup_temp_files(temp_dir)
-            except Exception as cleanup_error:
-                logger.error(f"Error during cleanup: {str(cleanup_error)}")
+            cleanup_temp_files(temp_dir)
 
     async def send_scenes_archive(self, message, temp_dir: str):
         """Create and send zip archive with scenes."""
@@ -344,163 +373,88 @@ class SceneDetectionBot:
             archive_name = f"scenes_{len(scenes)}.zip"
             archive_path = os.path.join(ARCHIVE_DIR, archive_name)
 
-            # Check if archive already exists and is complete
-            if os.path.exists(archive_path):
-                logger.info(f"Found existing archive: {archive_path}")
-                await message.edit_text("📦 Найден существующий архив. Начинаем отправку...")
-            else:
-                # Calculate total size of scenes
-                total_size = sum(os.path.getsize(os.path.join(temp_dir, scene)) for scene in scenes)
-                logger.info(f"Total size of scenes to archive: {total_size/(1024*1024):.1f}MB")
+            # Calculate total size of scenes
+            total_size = sum(os.path.getsize(os.path.join(temp_dir, scene)) for scene in scenes)
+            logger.info(f"Total size of scenes to archive: {total_size/(1024*1024):.1f}MB")
 
-                # Create archive command with faster compression settings
-                scene_paths = ' '.join([os.path.abspath(os.path.join(temp_dir, scene)) for scene in scenes])
-                # Use -1 for fastest compression
-                zip_command = f"zip -1 -j '{archive_path}' {scene_paths}"
+            # Create archive with fast compression
+            scene_paths = ' '.join([os.path.abspath(os.path.join(temp_dir, scene)) for scene in scenes])
+            zip_command = f"zip -1 -j '{archive_path}' {scene_paths}"
 
-                logger.info(f"Running zip command: {zip_command}")
-                await message.edit_text("📦 Создание архива...\nЭто может занять несколько минут.")
+            logger.info(f"Running zip command: {zip_command}")
+            await message.edit_text("📦 Создание архива...\nЭто может занять несколько минут.")
 
-                process = await asyncio.create_subprocess_shell(
-                    zip_command,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE
-                )
-
-                try:
-                    # Start a background task to update the message periodically
-                    update_msg_task = asyncio.create_task(
-                        self._update_archive_progress(message, archive_path)
-                    )
-
-                    # Wait for the process with a 5-minute timeout
-                    stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=300)
-
-                    # Cancel the progress update task
-                    update_msg_task.cancel()
-                    try:
-                        await update_msg_task
-                    except asyncio.CancelledError:
-                        pass
-
-                    if stdout:
-                        logger.info(f"zip stdout: {stdout.decode()}")
-                    if stderr:
-                        logger.warning(f"zip stderr: {stderr.decode()}")
-
-                    if process.returncode != 0:
-                        error_msg = stderr.decode() if stderr else "Unknown error"
-                        logger.error(f"zip process failed with return code {process.returncode}: {error_msg}")
-                        await message.edit_text(
-                            f"❌ Ошибка при создании архива: {error_msg}\n"
-                            "Попробуйте еще раз или используйте опцию отправки сцен по отдельности."
-                        )
-                        return
-
-                except asyncio.TimeoutError:
-                    if process and process.returncode is None:
-                        process.kill()
-                    logger.error("Archive creation timed out")
-                    await message.edit_text(
-                        "❌ Превышено время создания архива. "
-                        "Попробуйте еще раз или используйте опцию отправки сцен по отдельности."
-                    )
-                    return
+            process = await asyncio.create_subprocess_shell(
+                zip_command,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
 
             try:
-                if not os.path.exists(archive_path):
-                    logger.error(f"Archive not found at path: {archive_path}")
-                    await message.edit_text("❌ Архив не был создан")
+                # Wait for the process with a timeout
+                stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=300)
+
+                if process.returncode != 0:
+                    error_msg = stderr.decode() if stderr else "Unknown error"
+                    logger.error(f"zip process failed: {error_msg}")
+                    await message.edit_text(
+                        "❌ Ошибка при создании архива.\n"
+                        "Попробуйте использовать опцию отправки сцен по отдельности."
+                    )
                     return
 
-                archive_size = os.path.getsize(archive_path)
-                logger.info(f"Archive size: {archive_size/(1024*1024):.1f}MB")
+                if not os.path.exists(archive_path):
+                    logger.error("Archive not found after creation")
+                    await message.edit_text("❌ Не удалось создать архив")
+                    return
 
+                # Get archive size
+                archive_size = os.path.getsize(archive_path)
                 if archive_size > TELEGRAM_MAX_FILE_SIZE:
-                    logger.warning(
-                        f"Archive size {archive_size/(1024*1024):.1f}MB exceeds "
-                        f"Telegram limit {TELEGRAM_MAX_FILE_SIZE/(1024*1024)}MB"
-                    )
                     await message.edit_text(
-                        f"❌ Размер архива ({archive_size/(1024*1024):.1f}MB) превышает лимит Telegram (2GB). "
+                        f"❌ Размер архива ({archive_size/(1024*1024):.1f}MB) превышает лимит Telegram (2GB).\n"
                         "Пожалуйста, используйте опцию отправки сцен по отдельности."
                     )
                     return
 
                 await message.edit_text("📤 Отправка архива...")
 
-                # Multiple attempts to send the file with exponential backoff
-                max_retries = 3
-                for attempt in range(max_retries):
+                # Send archive with large chunk size and timeouts
+                with open(archive_path, 'rb') as archive:
+                    sent_message = await message.reply_document(
+                        document=archive,
+                        filename=archive_name,
+                        caption=f"📦 Архив со сценами - {len(scenes)} сцен",
+                        read_timeout=3600,  # 1 hour
+                        write_timeout=3600,  # 1 hour
+                        connect_timeout=60,  # 1 minute
+                        chunk_size=20 * 1024 * 1024  # 20MB chunks
+                    )
+
+                if sent_message:
+                    await message.edit_text("✅ Архив успешно отправлен!")
                     try:
-                        # Each attempt gets more time
-                        timeout = 600 * (attempt + 1)  # 10, 20, 30 minutes
-                        logger.info(f"Attempt {attempt + 1}/{max_retries} with {timeout}s timeout")
-
-                        async with asyncio.timeout(timeout):
-                            with open(archive_path, 'rb') as archive:
-                                sent_message = await message.reply_document(
-                                    document=archive,
-                                    filename=archive_name,
-                                    caption=f"📦 Архив со сценами - {len(scenes)} сцен",
-                                    read_timeout=timeout,
-                                    write_timeout=timeout,
-                                    connect_timeout=60
-                                )
-
-                            if sent_message:
-                                await message.edit_text("✅ Архив успешно отправлен!")
-                                logger.info("Archive sent successfully")
-                                # Clean up the archive after successful send
-                                try:
-                                    os.unlink(archive_path)
-                                    logger.info(f"Cleaned up archive file: {archive_path}")
-                                except Exception as e:
-                                    logger.error(f"Error cleaning up archive: {e}")
-                                break
-                            else:
-                                raise Exception("Failed to send archive - no response from Telegram")
-
-                    except asyncio.TimeoutError:
-                        logger.error(f"Timeout on attempt {attempt + 1}")
-                        if attempt < max_retries - 1:
-                            wait_time = 30 * (attempt + 1)  # 30, 60, 90 seconds
-                            await message.edit_text(
-                                f"⚠️ Таймаут при отправке архива (попытка {attempt + 1}/{max_retries}).\n"
-                                f"Повторная попытка через {wait_time} секунд..."
-                            )
-                            await asyncio.sleep(wait_time)
-                            continue
-                        else:
-                            await message.edit_text(
-                                "❌ Не удалось отправить архив после нескольких попыток.\n"
-                                "Архив сохранен. После перезапуска бота нажмите 'Скачать архивом' для повторной попытки."
-                            )
+                        os.unlink(archive_path)
                     except Exception as e:
-                        logger.error(f"Error on attempt {attempt + 1}: {str(e)}")
-                        if attempt < max_retries - 1:
-                            wait_time = 30 * (attempt + 1)
-                            await message.edit_text(
-                                f"⚠️ Ошибка при отправке архива (попытка {attempt + 1}/{max_retries}).\n"
-                                f"Повторная попытка через {wait_time} секунд..."
-                            )
-                            await asyncio.sleep(wait_time)
-                            continue
-                        else:
-                            await message.edit_text(
-                                "❌ Не удалось отправить архив после нескольких попыток.\n"
-                                "Архив сохранен. После перезапуска бота нажмите 'Скачать архивом' для повторной попытки."
-                            )
+                        logger.error(f"Error cleaning up archive: {e}")
+                else:
+                    raise Exception("Failed to send archive")
 
-            except Exception as e:
-                logger.exception(f"Error in send_scenes_archive: {str(e)}")
-                await message.edit_text(f"❌ Ошибка при работе с архивом: {str(e)}")
+            except asyncio.TimeoutError:
+                logger.error("Archive operation timed out")
+                await message.edit_text(
+                    "❌ Превышено время операции с архивом.\n"
+                    "Попробуйте использовать опцию отправки сцен по отдельности."
+                )
+
+        except Exception as e:
+            logger.error(f"Error in send_scenes_archive: {str(e)}")
+            await message.edit_text(
+                "❌ Ошибка при работе с архивом.\n"
+                "Попробуйте использовать опцию отправки сцен по отдельности."
+            )
         finally:
-            try:
-                cleanup_temp_files(temp_dir)
-                logger.debug(f"Cleaned up temporary directory: {temp_dir}")
-            except Exception as cleanup_error:
-                logger.error(f"Error during cleanup: {str(cleanup_error)}")
+            cleanup_temp_files(temp_dir)
 
     async def check_7zip_available(self):
         """Check if 7zip is available in the system."""
@@ -566,7 +520,7 @@ class SceneDetectionBot:
         """Set up message handlers."""
         # Handle YouTube links first
         self.application.add_handler(MessageHandler(
-            filters.TEXT & ~filters.COMMAND,
+            filters.TEXT & ~filters.COMMAND & filters.Regex(r'youtube\.com|youtu\.be'),
             self.handle_youtube_link
         ))
 
@@ -585,7 +539,9 @@ class SceneDetectionBot:
 
     def run(self):
         """Run the bot."""
+        logger.info("Starting bot polling...")
         self.application.run_polling()
+
 
 if __name__ == "__main__":
     bot = SceneDetectionBot()

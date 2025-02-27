@@ -3,6 +3,10 @@ modules = ["python-3.11"]
 [nix]
 channel = "stable-24_05"
 
+[deployment]
+deploymentTarget = "autoscale"
+run = ["gunicorn", "--bind", "0.0.0.0:5000", "main:app"]
+
 [workflows]
 runButton = "Project"
 
@@ -27,7 +31,4 @@ task = "packager.installForAll"
 
 [[workflows.workflow.tasks]]
 task = "shell.exec"
-args = "python bot.py"
-
-[deployment]
-run = ["sh", "-c", "python bot.py"]
+args = "python main.py"

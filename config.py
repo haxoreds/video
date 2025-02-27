@@ -10,5 +10,5 @@ TELEGRAM_MAX_FILE_SIZE = 2000 * 1024 * 1024  # 2GB - максимальный р
 SUPPORTED_VIDEO_FORMATS = ['.mp4', '.avi', '.mkv', '.mov']
 
 # Scene Detection
-MIN_SCENE_LENGTH = 2.5  # increased from 2.0 to reduce number of small scenes
-THRESHOLD = 30.0  # increased from 27.0 to be less sensitive to minor changes
+MIN_SCENE_LENGTH = 2.5  # минимальная длина сцены в секундах (увеличено для уменьшения количества сцен)
+THRESHOLD = 35.0  # порог чувствительности для определения изменения сцены (увеличено для уменьшения количества сцен)

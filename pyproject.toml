@@ -9,7 +9,7 @@ dependencies = [
     "opencv-python>=4.11.0.86",
     "opencv-python-headless==4.11.0.86",
     "psutil>=7.0.0",
-    "python-telegram-bot==20.7",
+    "python-telegram-bot[httpx]==20.7",
     "pytube==15.0.0",
     "requests>=2.32.3",
     "scenedetect==0.6.5.2",
